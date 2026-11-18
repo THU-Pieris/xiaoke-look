@@ -1,7 +1,7 @@
 {
   "name": "xiaoke-look",
-  "version": "0.1.0",
-  "description": "Claude-chan afternoon look for the desktop Code tab: warm paper palette and a vector illustration that fades into blank paper",
+  "version": "0.2.0",
+  "description": "Five Claude-chan looks for the desktop Code tab, switched with /xiaoke: palettes and vector illustrations that fade into blank paper",
   "author": { "name": "bananaeat" },
   "license": "MIT"
 }

@@ -1,43 +1,51 @@
-import type { Register, ThemeSetArgs } from 'claude-code'
+import type { Register } from 'claude-code'
 
-import { makeColors } from './make-colors.js'
-import { PAPER, SCENE } from './scene'
+import { DEFAULT_LOOK, LOOKS, findLook, lookArgs } from './looks'
 
-// Claude-chan, afternoon: warm cream paper, dark-brown ink, her orange as the accent.
-// The backdrop is made for a light room, so the look is light only.
-const { theme, problems } = makeColors({
-  label: 'Claude娘 · 午后',
-  only: 'light',
-  roles: { accent: '#c8561f', danger: '#b3392f', success: '#5a7d3a', warning: '#a86f14', pro: '#7a4f8a' },
-  light: {
-    gray: {
-      anchors: {
-        'surface-0': PAPER as `#${string}`,
-        'surface-1': '#f6eee2',
-        'surface-2': '#faf5ec',
-        'text-primary': '#2b1c15',
-        'text-secondary': '#553e31',
-        'text-muted': '#6b5545',
-      },
-    },
-  },
-})
+// Xiaoke looks: one illustrated scene per look, switched with /xiaoke and
+// remembered across sessions in this mod's store.
+const LOOK_KEY = 'look'
+// How far (CSS px) the picture keeps clear of the right edge, for a side panel
+// that is open there: the app draws its side panels opaque over the backdrop.
+const INSET_KEY = 'inset'
+const PANEL_WIDTH = 320
+const PIC_TAG = '<svg class="pic" x="0" '
 
-const SCENE_NAME = 'afternoon'
+async function storedInset(get: (key: string) => Promise<unknown>): Promise<number> {
+  const value = await get(INSET_KEY)
 
-const LOOK: ThemeSetArgs = {
-  colors: theme,
-  backdrop: { scene: SCENE_NAME, glass: { blur: 18, tint: '#f6eee2', opacity: 0.62 } },
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function listText(current: string, inset: number): string {
+  const rows = Object.values(LOOKS).map(look => {
+    const mark = look.id === current ? '●' : '○'
+
+    return `${mark} ${look.id.padEnd(10)} ${look.title}（${look.mode === 'dark' ? '深色' : '浅色'}）`
+  })
+
+  return [
+    '小克主题：',
+    ...rows,
+    '',
+    '用 /xiaoke <名字> 切换，例如 /xiaoke night',
+    `右侧栏让位：${inset > 0 ? `${inset}px` : '关'}（/xiaoke 右栏 开关，/xiaoke 右栏 <像素> 设宽度）`,
+  ].join('\n')
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    const unpainted = problems.find(line => line.startsWith("Desktop won't paint"))
+    await $.command.register({
+      name: 'xiaoke',
+      description: '切换小克主题：afternoon / night / code / rain / snow；/xiaoke 右栏 让插画避开右侧栏',
+    })
+    const stored = await $.store.get(LOOK_KEY)
+    const look = findLook(typeof stored === 'string' ? stored : DEFAULT_LOOK) ?? LOOKS[DEFAULT_LOOK]!
 
-    if (unpainted !== undefined) {
-      $.ui.toast(unpainted)
+    if (look.unpainted !== undefined) {
+      $.ui.toast(look.unpainted)
     }
-    const set = await $.theme.set(LOOK)
+    const set = await $.theme.set(lookArgs(look))
 
     if (!set.isDrawn) {
       $.ui.status(set.reason)
@@ -46,18 +54,60 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('ui.render', { component: 'Backdrop' }, ($, e, next) => {
-    if (e.props.scene !== SCENE_NAME || (e.surface !== 'desktop' && e.surface !== 'mobile')) {
+  on('command.run', { command: 'xiaoke' }, async ($, e) => {
+    const stored = await $.store.get(LOOK_KEY)
+    const current = findLook(typeof stored === 'string' ? stored : DEFAULT_LOOK) ?? LOOKS[DEFAULT_LOOK]!
+    const inset = await storedInset(key => $.store.get(key))
+    const [word = '', amount] = e.args.trim().split(/\s+/)
+
+    if (word === '') {
+      return { text: listText(current.id, inset) }
+    }
+    if (word === '右栏' || word === '侧栏' || word === 'panel' || word === 'inset') {
+      let width = inset > 0 ? 0 : PANEL_WIDTH
+
+      if (amount !== undefined) {
+        const px = Number(amount)
+
+        if (!Number.isFinite(px) || px < 0 || px > 1200) {
+          return { text: `「${amount}」不是 0 到 1200 之间的像素数。` }
+        }
+        width = Math.round(px)
+      }
+      await $.store.set(INSET_KEY, width)
+      // A set of the same look draws the backdrop again with the new inset.
+      await $.theme.set(lookArgs(current))
+
+      return {
+        text: width > 0 ? `插画现在给右侧栏让出 ${width}px。` : '插画不再给右侧栏让位，贴着窗口右边。',
+      }
+    }
+    const look = findLook(word)
+
+    if (look === undefined) {
+      return { text: `没有叫「${word}」的主题。\n\n${listText(current.id, inset)}` }
+    }
+    await $.store.set(LOOK_KEY, look.id)
+    const set = await $.theme.set(lookArgs(look))
+
+    if (!set.isDrawn) {
+      return { text: `已记住「${look.title}」，但这里不显示主题：${set.reason}` }
+    }
+
+    return { text: `已换成「${look.title}」。之后新开的会话也会用它。` }
+  })
+
+  on('ui.render', { component: 'Backdrop' }, async ($, e, next) => {
+    const look = LOOKS[e.props.scene]
+
+    if (look === undefined || (e.surface !== 'desktop' && e.surface !== 'mobile')) {
       return next(e)
     }
     const { Svg } = $.ui.resolve(e)
+    // Phones have no side panel.
+    const inset = e.surface === 'desktop' ? await storedInset(key => $.store.get(key)) : 0
+    const source = inset > 0 ? look.scene.replace(PIC_TAG, `<svg class="pic" x="-${inset}" `) : look.scene
 
-    return (
-      <Svg
-        source={SCENE}
-        alt="Claude-chan reading by a sunny window, the picture fading into blank paper"
-        isInteractive
-      />
-    )
+    return <Svg source={source} alt={look.alt} isInteractive />
   })
 }
