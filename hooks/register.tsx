@@ -138,6 +138,13 @@ async function show($: EngineInterface, look: Look) {
   return set
 }
 
+// /xiaoke demo: every look in turn, for a recording; nothing is stored. A
+// one-second ticker started at session.start advances it, since a timer
+// started inside the command would end with that command.
+const DEMO_WORDS = ['demo', '轮播', '演示']
+const DEMO_SECONDS = 6
+let demo: { ids: string[]; index: number; nextAt: number; stepMs: number } | undefined
+
 export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
@@ -157,11 +164,35 @@ export const register: Register = on => {
       $.ui.status(set.reason)
     }
     $.clock.every(CHECK_MS, async () => {
+      if (demo !== undefined) {
+        return
+      }
       const choice = await chosen(get, await $.clock.now())
 
       if (choice.isAuto && choice.look.id !== shown) {
         await show($, choice.look)
       }
+    })
+    $.clock.every(1000, async () => {
+      if (demo === undefined) {
+        return
+      }
+      const now = await $.clock.now()
+
+      if (now < demo.nextAt) {
+        return
+      }
+      demo.index += 1
+      const id = demo.ids[demo.index]
+
+      if (id === undefined) {
+        demo = undefined
+        await show($, (await chosen(get, now)).look)
+
+        return
+      }
+      demo.nextAt = now + demo.stepMs
+      await show($, LOOKS[id]!)
     })
 
     return next(e)
@@ -175,6 +206,24 @@ export const register: Register = on => {
     const [word = '', amount] = e.args.trim().split(/\s+/)
     const key = word.toLowerCase()
 
+    if (DEMO_WORDS.includes(key)) {
+      if (demo !== undefined) {
+        demo = undefined
+        await show($, current.look)
+
+        return { text: '轮播停了，回到「' + current.look.title + '」。' }
+      }
+      const seconds = amount === undefined ? DEMO_SECONDS : Number(amount)
+
+      if (!Number.isFinite(seconds) || seconds < 2 || seconds > 60) {
+        return { text: `「${amount}」不是 2 到 60 之间的秒数。` }
+      }
+      const ids = Object.keys(LOOKS)
+      demo = { ids, index: 0, nextAt: now + seconds * 1000, stepMs: seconds * 1000 }
+      await show($, LOOKS[ids[0]!]!)
+
+      return { text: `开始轮播 ${ids.length} 套，每套 ${seconds} 秒，播完回到「${current.look.title}」。再输一次 /xiaoke demo 停止。` }
+    }
     if (word === '' || LIST_WORDS.includes(key)) {
       return { text: listText(current, s, await clockLine(get, now), word !== '') }
     }

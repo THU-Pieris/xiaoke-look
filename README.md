@@ -35,6 +35,7 @@ A Claude Code mod with thirteen Claude-chan looks for the desktop app's Code tab
 | `/xiaoke 左栏 425`、`/xiaoke 右栏 320` | 告诉它左右侧栏有多宽，好把小克的脸摆进空隙；不带数字是开关 |
 | `/xiaoke 透明`、`/xiaoke 透明 20` | 消息栏背后的遮罩：全透明，或设成百分比（默认 42%） |
 | `/xiaoke 时区 +0` | 自动模式用的时区，默认跟随系统；`/xiaoke 时区 自动` 改回 |
+| `/xiaoke demo`、`/xiaoke demo 8` | 把 13 套轮播一遍（每套 6 秒或给定秒数），播完回到原来那套；再输一次停止。录屏演示用，不改设置 |
 
 选择会被记住，之后新开的会话也用它。默认是 `afternoon`。
 
@@ -82,7 +83,7 @@ Needs a Claude desktop app that draws mod looks (tested with Claude Code 2.1.326
 
 ## 说明 / Notes
 
-- **背景是纯矢量。** 桌面端的背景只接受纯矢量 SVG（不能嵌位图，最多 131072 字符），所以每张原画（`docs/scenes/*.png`）都被描摹成了 7 万到 12 万字符的平涂色块 SVG。The backdrops are pure vector: each painting was traced into flat-ink paths under the 131,072-character limit.
+- **背景是纯矢量。** 桌面端的背景只接受纯矢量 SVG（不能嵌位图，最多 131072 字符），所以每张原画（`illustrations/*.png`，见 [illustrations/](illustrations/)）都被描摹成了 7 万到 12 万字符的平涂色块 SVG。The backdrops are pure vector: each painting was traced into flat-ink paths under the 131,072-character limit.
 - 开启"减少动态"时飘落物静止。Particles rest in place under reduced motion.
 
 ## 自己重新描摹 / Rebuilding a scene
@@ -90,7 +91,7 @@ Needs a Claude desktop app that draws mod looks (tested with Claude Code 2.1.326
 `tools/` 里是描摹流程（Python 3，需要 numpy、opencv-python、resvg-py）。浅色场景：
 
 ```
-python tools/trace.py docs/scenes/rain.png vec.json --scale 1.0 --colors 20 --eps 1.0 --minarea 9 --crop 0,0,1024,1200 --paper "#dce2e9"
+python tools/trace.py illustrations/rain.png vec.json --scale 1.0 --colors 20 --eps 1.0 --minarea 9 --crop 0,0,1024,1200 --paper "#dce2e9"
 python tools/build_scene.py vec.json hooks/scenes/rain.ts --preview preview.svg --fx rain --side left --face 0.54,0.18
 python tools/render.py preview.svg preview.png 1600
 ```
