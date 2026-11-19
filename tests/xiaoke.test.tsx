@@ -1,10 +1,14 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-type SetCall = { backdrop?: { scene?: string } }
+import { LOOKS } from '../hooks/looks'
+import { autoLookId, localMoment, parseOffset } from '../hooks/schedule'
+
+type SetCall = { backdrop?: { scene?: string; glass?: { opacity: number; blur: number } } }
 
 // Hooks that stand for the engine: command registry, theme, store.
-function engine(on: On, sets: SetCall[]) {
+function engine(on: On, sets: SetCall[], now = Date.parse('2026-11-18T04:00:00Z')) {
+  on('clock.now', () => ({ value: now }))
   on('command.register', () => ({ value: { command: 'xiaoke' } }))
   on('theme.set', (_, e) => {
     sets.push(e as SetCall)
@@ -65,35 +69,107 @@ const backdrop = (scene: string) =>
 
 test('every look draws its own scene on the desktop', async ($, on) => {
   engine(on, [])
-  for (const scene of ['afternoon', 'night', 'code', 'rain', 'snow']) {
+  expect(Object.keys(LOOKS).length).toBe(13)
+  for (const look of Object.values(LOOKS)) {
+    // A line starting "Desktop won't paint" means the app would drop the palette.
+    expect(look.unpainted).toBeUndefined()
+    expect(look.scene.length).toBeLessThan(131072)
+  }
+  for (const scene of Object.keys(LOOKS)) {
     const ui = await $.ui.mount(backdrop(scene))
     const svg = await ui.find({ type: 'Svg' })
     expect(svg).toBeDefined()
-    expect(JSON.stringify(svg)).toContain('class=\\"pic\\" x=\\"0\\"')
+    expect(JSON.stringify(svg)).toContain('class=\\"mv\\" style=\\"transform:translateX(calc(')
     await ui.unmount()
   }
 })
 
-test('the right-panel inset moves the picture left and toggles off', async ($, on) => {
+const at = (iso: string) => Date.parse(iso)
+
+test('auto picks a look by local time of day and season', () => {
+  const all = () => true
+  const look = (iso: string, offset = 480) => autoLookId(localMoment(at(iso), offset), all)
+
+  // 2026-11-18 is a Wednesday in autumn; times are UTC, the offset is +8.
+  expect(look('2026-11-17T23:30:00Z')).toBe('morning') // 07:30
+  expect(look('2026-11-18T09:00:00Z')).toBe('dusk') // 17:00
+  expect(look('2026-11-18T12:00:00Z')).toBe('night') // 20:00
+  expect(['code', 'detective']).toContain(look('2026-11-18T17:00:00Z')) // 01:00
+  expect(['autumn', 'afternoon', 'cafe', 'rain']).toContain(look('2026-11-18T04:00:00Z')) // 12:00
+  // Christmas Eve evening and a summer evening.
+  expect(look('2026-12-24T12:00:00Z')).toBe('holiday')
+  expect(['festival', 'night']).toContain(look('2026-07-20T12:00:00Z'))
+  // Late night belongs to the evening it began on.
+  expect(look('2026-11-18T17:00:00Z')).toBe(look('2026-11-18T15:30:00Z'))
+  // A look not drawn yet falls back to the next candidate.
+  expect(autoLookId(localMoment(at('2026-11-17T23:30:00Z'), 480), id => id !== 'morning')).toBe('afternoon')
+  expect(parseOffset('+8')).toBe(480)
+  expect(parseOffset('UTC-5:30')).toBe(-330)
+  expect(parseOffset('east')).toBeUndefined()
+})
+
+test('/xiaoke auto stores auto and follows the stored time zone', async ($, on) => {
+  const sets: SetCall[] = []
+  // 2026-11-18 17:00 at UTC+8.
+  const kept = engine(on, sets, at('2026-11-18T09:00:00Z'))
+  kept.set('tz', 480)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const auto = await $.command.run(typed('auto'))
+  expect(kept.get('look')).toBe('auto')
+  expect(auto.text).toContain('17:00')
+  expect(auto.text).toContain('黄昏')
+
+  const tz = await $.command.run(typed('时区 +0'))
+  expect(kept.get('tz')).toBe(0)
+  expect(tz.text).toContain('09:00')
+
+  const listed = await $.command.run(typed(''))
+  expect(listed.text).toContain('● auto')
+
+  const all = await $.command.run(typed('list'))
+  for (const id of Object.keys(LOOKS)) {
+    expect(all.text).toContain(id)
+  }
+  expect(all.text).toContain('樱花')
+})
+
+
+const styleOf = async ($: { ui: { mount: (input: ReturnType<typeof backdrop>) => Promise<{ find: (q: { type: string }) => Promise<unknown>; unmount: () => Promise<void> }> } }, scene: string) => {
+  const ui = await $.ui.mount(backdrop(scene))
+  const text = JSON.stringify(await ui.find({ type: 'Svg' }))
+  await ui.unmount()
+
+  return text
+}
+
+test('the side panels move the face and the veil clears', async ($, on) => {
   const sets: SetCall[] = []
   const kept = engine(on, sets)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
 
-  const on1 = await $.command.run(typed('右栏'))
-  expect(on1.text).toContain('320px')
+  // Defaults: left sidebar open at 300, right panel closed.
+  expect(await styleOf($, 'afternoon')).toContain('min(-25vw + 265px, -100px)')
+  const right = await $.command.run(typed('右栏'))
+  expect(right.text).toContain('320px')
   expect(kept.get('inset')).toBe(320)
-  const ui = await $.ui.mount(backdrop('afternoon'))
-  expect(JSON.stringify(await ui.find({ type: 'Svg' }))).toContain('x=\\"-320\\"')
-  await ui.unmount()
+  expect(await styleOf($, 'afternoon')).toContain('min(-25vw + 25px, -420px)')
 
-  const custom = await $.command.run(typed('panel 280'))
-  expect(custom.text).toContain('280px')
-  expect(kept.get('inset')).toBe(280)
+  // holiday is pinned left: its face goes to the left gap.
+  const left = await $.command.run(typed('左栏 425'))
+  expect(left.text).toContain('425px')
+  expect(await styleOf($, 'holiday')).toContain('max(25vw + 48.75px, 525px)')
 
-  const off = await $.command.run(typed('右栏'))
-  expect(off.text).toContain('不再')
+  const closed = await $.command.run(typed('右栏'))
+  expect(closed.text).toContain('收起来')
   expect(kept.get('inset')).toBe(0)
+  expect((await $.command.run(typed('右栏 abc'))).text).toContain('不是')
 
-  const bad = await $.command.run(typed('右栏 abc'))
-  expect(bad.text).toContain('不是')
+  const clear = await $.command.run(typed('透明'))
+  expect(clear.text).toContain('全透明')
+  expect(sets.at(-1)?.backdrop?.glass).toEqual(expect.objectContaining({ opacity: 0, blur: 0 }))
+  const some = await $.command.run(typed('透明 20'))
+  expect(some.text).toContain('20%')
+  expect(sets.at(-1)?.backdrop?.glass).toEqual(expect.objectContaining({ opacity: 0.2, blur: 14 }))
+  expect((await $.command.run(typed('透明 120'))).text).toContain('不是')
 })

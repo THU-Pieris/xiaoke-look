@@ -1,100 +1,266 @@
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
-import { DEFAULT_LOOK, LOOKS, findLook, lookArgs } from './looks'
+import { DEFAULT_LOOK, DEFAULT_VEIL, LOOKS, faceShift, findLook, lookArgs, type Look } from './looks'
+import { SLOT_NAMES, autoLookId, formatOffset, localMoment, parseOffset, slotOf } from './schedule'
 
 // Xiaoke looks: one illustrated scene per look, switched with /xiaoke and
-// remembered across sessions in this mod's store.
+// remembered across sessions in this mod's store. The stored look `auto`
+// follows the time of day and the season.
 const LOOK_KEY = 'look'
-// How far (CSS px) the picture keeps clear of the right edge, for a side panel
-// that is open there: the app draws its side panels opaque over the backdrop.
-const INSET_KEY = 'inset'
-const PANEL_WIDTH = 320
-const PIC_TAG = '<svg class="pic" x="0" '
+const AUTO = 'auto'
+const AUTO_WORDS = ['auto', '自动', '随时间', '时间']
+const LIST_WORDS = ['list', 'ls', '列表', '全部', '所有']
+// Minutes east of UTC, when the person set it; else the runtime's own offset.
+const TZ_KEY = 'tz'
+const CHECK_MS = 10 * 60_000
+// The side panels, in CSS px: the app draws them opaque over the backdrop and
+// does not tell a mod whether they are open, so the person says. The picture
+// moves so the face sits in the gap between the transcript and the panel.
+const RIGHT_KEY = 'inset'
+const RIGHT_WIDTH = 320
+const RIGHT_WORDS = ['右栏', '侧栏', 'panel', 'inset', 'right']
+const LEFT_KEY = 'left'
+const LEFT_WIDTH = 300
+const LEFT_WORDS = ['左栏', 'sidebar', 'left']
+// How solid the veil over the picture behind the conversation is, 0 to 1.
+const VEIL_KEY = 'veil'
+const VEIL_WORDS = ['透明', '遮罩', '透明度', 'glass', 'veil']
+const MOVER = '<g class="mv">'
 
-async function storedInset(get: (key: string) => Promise<unknown>): Promise<number> {
-  const value = await get(INSET_KEY)
+type Get = (key: string) => Promise<unknown>
 
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+const asNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined
+
+async function rightWidth(get: Get): Promise<number> {
+  return asNumber(await get(RIGHT_KEY)) ?? 0
 }
 
-function listText(current: string, inset: number): string {
-  const rows = Object.values(LOOKS).map(look => {
-    const mark = look.id === current ? '●' : '○'
+async function leftWidth(get: Get): Promise<number> {
+  return asNumber(await get(LEFT_KEY)) ?? LEFT_WIDTH
+}
 
-    return `${mark} ${look.id.padEnd(10)} ${look.title}（${look.mode === 'dark' ? '深色' : '浅色'}）`
+async function veilOf(get: Get): Promise<number> {
+  return asNumber(await get(VEIL_KEY)) ?? DEFAULT_VEIL
+}
+
+async function offsetOf(get: Get, now: number): Promise<number> {
+  return asNumber(await get(TZ_KEY)) ?? -new Date(now).getTimezoneOffset()
+}
+
+type Choice = { look: Look; isAuto: boolean }
+
+async function chosen(get: Get, now: number): Promise<Choice> {
+  const stored = await get(LOOK_KEY)
+
+  if (stored === AUTO) {
+    const moment = localMoment(now, await offsetOf(get, now))
+    const id = autoLookId(moment, id => LOOKS[id] !== undefined)
+
+    return { look: LOOKS[id] ?? LOOKS[DEFAULT_LOOK]!, isAuto: true }
+  }
+  const look = findLook(typeof stored === 'string' ? stored : DEFAULT_LOOK) ?? LOOKS[DEFAULT_LOOK]!
+
+  return { look, isAuto: false }
+}
+
+async function clockLine(get: Get, now: number): Promise<string> {
+  const offset = await offsetOf(get, now)
+  const m = localMoment(now, offset)
+  const hhmm = `${String(m.hour).padStart(2, '0')}:${String(m.minute).padStart(2, '0')}`
+  const set = asNumber(await get(TZ_KEY)) === undefined ? '' : '，手动设的'
+
+  return `现在是 ${m.month} 月 ${m.date} 日 ${hhmm}（${formatOffset(offset)}${set}），算作${SLOT_NAMES[slotOf(m.hour)]}`
+}
+
+const AUTO_RULES = [
+  '自动模式：清晨 5–9 点睡衣早餐，白天 9–16 点轮换（窗边读书、咖啡店、雨天，隔天换成当季：春樱花、秋红叶、冬初雪），',
+  '黄昏 16–19 点放学，夜晚 19–23 点台灯夜读（夏天隔天烟花祭，12 月 20 日到 1 月 6 日圣诞），深夜轮换敲代码和侦探。',
+].join('')
+
+type Settings = { left: number; right: number; veil: number }
+
+async function settings(get: Get): Promise<Settings> {
+  return { left: await leftWidth(get), right: await rightWidth(get), veil: await veilOf(get) }
+}
+
+function settingLines(s: Settings): string[] {
+  const px = (v: number) => (v > 0 ? `${v}px` : '关')
+
+  return [
+    `左栏 ${px(s.left)}，右栏 ${px(s.right)}：小克的脸会挪到消息栏和侧栏之间的空隙里（/xiaoke 左栏 或 右栏 开关，后面加数字设宽度）`,
+    `消息栏遮罩 ${Math.round(s.veil * 100)}%（/xiaoke 透明 在全透明和默认之间切换，/xiaoke 透明 20 设成 20%）`,
+  ]
+}
+
+function listText(choice: Choice, s: Settings, clock: string, withAliases = false): string {
+  const rows = Object.values(LOOKS).map(look => {
+    const mark = look.id === choice.look.id ? '●' : '○'
+    const row = `${mark} ${look.id.padEnd(10)} ${look.title}（${look.mode === 'dark' ? '深色' : '浅色'}）`
+
+    return withAliases ? `${row}  也可以叫：${look.aliases.join('、')}` : row
   })
 
   return [
     '小克主题：',
     ...rows,
     '',
-    '用 /xiaoke <名字> 切换，例如 /xiaoke night',
-    `右侧栏让位：${inset > 0 ? `${inset}px` : '关'}（/xiaoke 右栏 开关，/xiaoke 右栏 <像素> 设宽度）`,
+    choice.isAuto ? `● auto       随时间自动换。${clock}` : '○ auto       随时间自动换（/xiaoke auto）',
+    '',
+    '用 /xiaoke <名字> 切换，例如 /xiaoke night 或 /xiaoke 樱花；/xiaoke list 连别名一起列出',
+    ...settingLines(s),
+    '时区不对的话：/xiaoke 时区 +0（/xiaoke 时区 自动 改回跟随系统）',
   ].join('\n')
 }
 
+// A width word's argument: none toggles between off and the usual width.
+function widthFrom(amount: string | undefined, current: number, usual: number): number | string {
+  if (amount === undefined) {
+    return current > 0 ? 0 : usual
+  }
+  const px = Number(amount)
+
+  if (!Number.isFinite(px) || px < 0 || px > 1200) {
+    return `「${amount}」不是 0 到 1200 之间的像素数。`
+  }
+
+  return Math.round(px)
+}
+
+// The look on screen, so the timer only redraws when the slot changes.
+let shown: string | undefined
+
+async function show($: EngineInterface, look: Look) {
+  const veil = asNumber(await $.store.get(VEIL_KEY)) ?? DEFAULT_VEIL
+  const set = await $.theme.set(lookArgs(look, veil))
+  shown = look.id
+
+  return set
+}
+
 export const register: Register = on => {
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'xiaoke',
-      description: '切换小克主题：afternoon / night / code / rain / snow；/xiaoke 右栏 让插画避开右侧栏',
+      description: '切换小克主题：/xiaoke auto 随时间自动换，/xiaoke <名字> 固定一套，/xiaoke list 列出全部，/xiaoke 透明 让消息栏透明',
     })
-    const stored = await $.store.get(LOOK_KEY)
-    const look = findLook(typeof stored === 'string' ? stored : DEFAULT_LOOK) ?? LOOKS[DEFAULT_LOOK]!
+    const get: Get = key => $.store.get(key)
+    const { look } = await chosen(get, await $.clock.now())
 
     if (look.unpainted !== undefined) {
       $.ui.toast(look.unpainted)
     }
-    const set = await $.theme.set(lookArgs(look))
+    const set = await show($, look)
 
     if (!set.isDrawn) {
       $.ui.status(set.reason)
     }
+    $.clock.every(CHECK_MS, async () => {
+      const choice = await chosen(get, await $.clock.now())
+
+      if (choice.isAuto && choice.look.id !== shown) {
+        await show($, choice.look)
+      }
+    })
 
     return next(e)
   })
 
   on('command.run', { command: 'xiaoke' }, async ($, e) => {
-    const stored = await $.store.get(LOOK_KEY)
-    const current = findLook(typeof stored === 'string' ? stored : DEFAULT_LOOK) ?? LOOKS[DEFAULT_LOOK]!
-    const inset = await storedInset(key => $.store.get(key))
+    const get: Get = key => $.store.get(key)
+    const now = await $.clock.now()
+    const current = await chosen(get, now)
+    const s = await settings(get)
     const [word = '', amount] = e.args.trim().split(/\s+/)
+    const key = word.toLowerCase()
 
-    if (word === '') {
-      return { text: listText(current.id, inset) }
+    if (word === '' || LIST_WORDS.includes(key)) {
+      return { text: listText(current, s, await clockLine(get, now), word !== '') }
     }
-    if (word === '右栏' || word === '侧栏' || word === 'panel' || word === 'inset') {
-      let width = inset > 0 ? 0 : PANEL_WIDTH
+    if (RIGHT_WORDS.includes(key) || LEFT_WORDS.includes(key)) {
+      const isRight = RIGHT_WORDS.includes(key)
+      const width = widthFrom(amount, isRight ? s.right : s.left, isRight ? RIGHT_WIDTH : LEFT_WIDTH)
 
-      if (amount !== undefined) {
-        const px = Number(amount)
-
-        if (!Number.isFinite(px) || px < 0 || px > 1200) {
-          return { text: `「${amount}」不是 0 到 1200 之间的像素数。` }
-        }
-        width = Math.round(px)
+      if (typeof width === 'string') {
+        return { text: width }
       }
-      await $.store.set(INSET_KEY, width)
-      // A set of the same look draws the backdrop again with the new inset.
-      await $.theme.set(lookArgs(current))
+      await $.store.set(isRight ? RIGHT_KEY : LEFT_KEY, width)
+      // A set of the same look draws the backdrop again with the new layout.
+      await show($, current.look)
+      const side = isRight ? '右' : '左'
 
       return {
-        text: width > 0 ? `插画现在给右侧栏让出 ${width}px。` : '插画不再给右侧栏让位，贴着窗口右边。',
+        text: width > 0 ? `按${side}侧栏 ${width}px 宽来摆小克的脸。` : `按${side}侧栏收起来摆小克的脸。`,
       }
+    }
+    if (VEIL_WORDS.includes(key)) {
+      let veil = s.veil > 0 ? 0 : DEFAULT_VEIL
+
+      if (amount !== undefined) {
+        const percent = Number(amount.replace(/%$/, ''))
+
+        if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+          return { text: `「${amount}」不是 0 到 100 之间的百分比。` }
+        }
+        veil = Math.round(percent) / 100
+      }
+      await $.store.set(VEIL_KEY, veil)
+      await show($, current.look)
+
+      return {
+        text: veil === 0
+          ? '消息栏现在全透明，没有遮罩也没有模糊。字看不清的话：/xiaoke 透明 20'
+          : `消息栏遮罩 ${Math.round(veil * 100)}%（默认 ${Math.round(DEFAULT_VEIL * 100)}%）。`,
+      }
+    }
+    if (key === '时区' || key === 'tz') {
+      if (amount === undefined) {
+        return { text: `${await clockLine(get, now)}。\n用 /xiaoke 时区 +0 固定成某个时区，/xiaoke 时区 自动 跟随系统。` }
+      }
+      if (amount === '自动' || amount.toLowerCase() === 'auto') {
+        await $.store.set(TZ_KEY, null)
+      } else {
+        const offset = parseOffset(amount)
+
+        if (offset === undefined) {
+          return { text: `「${amount}」不是时区，写成 +0、-5 或 +5:30 这样。` }
+        }
+        await $.store.set(TZ_KEY, offset)
+      }
+      const after = await chosen(get, now)
+
+      if (after.isAuto && after.look.id !== shown) {
+        await show($, after.look)
+      }
+
+      return { text: `${await clockLine(get, now)}。` }
+    }
+    if (AUTO_WORDS.includes(key)) {
+      await $.store.set(LOOK_KEY, AUTO)
+      const { look } = await chosen(get, now)
+      const set = await show($, look)
+      const head = `${await clockLine(get, now)}，换成「${look.title}」。`
+
+      if (!set.isDrawn) {
+        return { text: `${head}\n已记住自动模式，但这里不显示主题：${set.reason}` }
+      }
+
+      return { text: `${head}\n${AUTO_RULES}\n会话开着时每 10 分钟看一次钟。` }
     }
     const look = findLook(word)
 
     if (look === undefined) {
-      return { text: `没有叫「${word}」的主题。\n\n${listText(current.id, inset)}` }
+      return { text: `没有叫「${word}」的主题。\n\n${listText(current, s, await clockLine(get, now))}` }
     }
     await $.store.set(LOOK_KEY, look.id)
-    const set = await $.theme.set(lookArgs(look))
+    const set = await show($, look)
 
     if (!set.isDrawn) {
       return { text: `已记住「${look.title}」，但这里不显示主题：${set.reason}` }
     }
 
-    return { text: `已换成「${look.title}」。之后新开的会话也会用它。` }
+    return { text: `已换成「${look.title}」，之后新开的会话也会用它。想让它随时间变：/xiaoke auto` }
   })
 
   on('ui.render', { component: 'Backdrop' }, async ($, e, next) => {
@@ -104,9 +270,15 @@ export const register: Register = on => {
       return next(e)
     }
     const { Svg } = $.ui.resolve(e)
-    // Phones have no side panel.
-    const inset = e.surface === 'desktop' ? await storedInset(key => $.store.get(key)) : 0
-    const source = inset > 0 ? look.scene.replace(PIC_TAG, `<svg class="pic" x="-${inset}" `) : look.scene
+    // Phones have no side panels: the picture stays pinned to its edge there.
+    const get: Get = key => $.store.get(key)
+    const source =
+      e.surface === 'desktop'
+        ? look.scene.replace(
+            MOVER,
+            `<g class="mv" style="transform:${faceShift(look, { left: await leftWidth(get), right: await rightWidth(get) })}">`,
+          )
+        : look.scene
 
     return <Svg source={source} alt={look.alt} isInteractive />
   })
