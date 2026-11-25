@@ -183,3 +183,40 @@ test('the side panels move the face and the veil clears', async ($, on) => {
   expect(sets.at(-1)?.backdrop?.glass).toEqual(expect.objectContaining({ opacity: 0.2, blur: 14 }))
   expect((await $.command.run(typed('透明 120'))).text).toContain('不是')
 })
+
+test('the session rail takes its room on the right, beside the right panel', async ($, on) => {
+  const kept = engine(on, [])
+  // Setting the same theme again redraws nothing on the desktop: the rail asks for a redraw.
+  const redraws: string[] = []
+  on('ui.invalidate', (_, e) => {
+    redraws.push((e as { event: string }).event)
+
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  expect((await $.command.run(typed(''))).text).toContain('会话栏（对话右边那一列）关')
+  const shown = await $.command.run(typed('会话栏 开'))
+  expect(shown.text).toContain('286px')
+  expect(kept.get('rail')).toBe(true)
+  expect(redraws).toEqual(['ui.render'])
+  // afternoon is pinned right: its face stays between the transcript and the rail.
+  expect(await styleOf($, 'afternoon')).toContain('min(-25vw + 50.5px, -386px)')
+  // holiday is pinned left: the transcript moves left of the rail, and so does the left gap.
+  expect(await styleOf($, 'holiday')).toContain('max(25vw + -36.5px, 400px)')
+  // With the right panel open too, both take room.
+  await $.command.run(typed('右栏 320'))
+  expect(await styleOf($, 'afternoon')).toContain('min(-25vw + -189.5px, -706px)')
+
+  expect((await $.command.run(typed('会话栏 也许'))).text).toContain('不是开或关')
+  expect(kept.get('rail')).toBe(true)
+  // One for the rail, one for the right panel; a refused word draws nothing.
+  expect(redraws).toHaveLength(2)
+  expect((await $.command.run(typed('rail off'))).text).toContain('收起来')
+  expect(kept.get('rail')).toBe(false)
+  expect(redraws).toHaveLength(3)
+  expect(await styleOf($, 'afternoon')).toContain('min(-25vw + 25px, -420px)')
+  // The bare word switches it.
+  expect((await $.command.run(typed('会话栏'))).text).toContain('286px')
+  expect(kept.get('rail')).toBe(true)
+})
