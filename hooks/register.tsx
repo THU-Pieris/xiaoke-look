@@ -235,8 +235,9 @@ export const register: Register = on => {
         return { text: width }
       }
       await $.store.set(isRight ? RIGHT_KEY : LEFT_KEY, width)
-      // A set of the same look draws the backdrop again with the new layout.
-      await show($, current.look)
+      // The theme is unchanged, so setting it again draws nothing new: ask the
+      // backdrop to draw again with the new layout.
+      $.ui.invalidate('ui.render')
       const side = isRight ? '右' : '左'
 
       return {

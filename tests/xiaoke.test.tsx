@@ -146,6 +146,13 @@ const styleOf = async ($: { ui: { mount: (input: ReturnType<typeof backdrop>) =>
 test('the side panels move the face and the veil clears', async ($, on) => {
   const sets: SetCall[] = []
   const kept = engine(on, sets)
+  // Setting the same theme again redraws nothing on the desktop: a width asks for a redraw.
+  const redraws: string[] = []
+  on('ui.invalidate', (_, e) => {
+    redraws.push((e as { event: string }).event)
+
+    return { value: undefined }
+  })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
 
   // Defaults: left sidebar open at 300, right panel closed.
@@ -153,17 +160,20 @@ test('the side panels move the face and the veil clears', async ($, on) => {
   const right = await $.command.run(typed('右栏'))
   expect(right.text).toContain('320px')
   expect(kept.get('inset')).toBe(320)
+  expect(redraws).toEqual(['ui.render'])
   expect(await styleOf($, 'afternoon')).toContain('min(-25vw + 25px, -420px)')
 
   // holiday is pinned left: its face goes to the left gap.
   const left = await $.command.run(typed('左栏 425'))
   expect(left.text).toContain('425px')
+  expect(redraws).toHaveLength(2)
   expect(await styleOf($, 'holiday')).toContain('max(25vw + 48.75px, 525px)')
 
   const closed = await $.command.run(typed('右栏'))
   expect(closed.text).toContain('收起来')
   expect(kept.get('inset')).toBe(0)
   expect((await $.command.run(typed('右栏 abc'))).text).toContain('不是')
+  expect(redraws).toHaveLength(3)
 
   const clear = await $.command.run(typed('透明'))
   expect(clear.text).toContain('全透明')
